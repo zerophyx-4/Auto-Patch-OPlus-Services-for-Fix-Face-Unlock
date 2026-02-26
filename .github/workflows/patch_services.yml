@@ -24,8 +24,10 @@ jobs:
 
       - name: Download baksmali & smali
         run: |
-          wget -q https://github.com/JesusFreke/smali/releases/download/v3.0.3/baksmali-3.0.3.jar -O baksmali.jar
-          wget -q https://github.com/JesusFreke/smali/releases/download/v3.0.3/smali-3.0.3.jar -O smali.jar
+          wget -q https://bitbucket.org/JesusFreke/smali/downloads/baksmali-3.0.3.jar -O baksmali.jar || \
+          curl -L https://github.com/JesusFreke/smali/releases/download/v3.0.3/baksmali-3.0.3.jar -o baksmali.jar
+          wget -q https://bitbucket.org/JesusFreke/smali/downloads/smali-3.0.3.jar -O smali.jar || \
+          curl -L https://github.com/JesusFreke/smali/releases/download/v3.0.3/smali-3.0.3.jar -o smali.jar
 
       - name: Download services.jar
         run: |
