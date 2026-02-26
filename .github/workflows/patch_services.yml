@@ -1,0 +1,416 @@
+name: Auto Patch Face Unlock Services and Disable Secure Screenshots
+
+on:
+  workflow_dispatch:
+    inputs:
+      services_jar_url:
+        description: 'Direct download URL of services.jar'
+        required: true
+        type: string
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y wget unzip zip python3
+
+      - name: Download baksmali & smali
+        run: |
+          wget -q https://github.com/JesusFreke/smali/releases/download/v3.0.3/baksmali-3.0.3.jar -O baksmali.jar
+          wget -q https://github.com/JesusFreke/smali/releases/download/v3.0.3/smali-3.0.3.jar -O smali.jar
+
+      - name: Download services.jar
+        run: |
+          echo "Downloading services.jar from: ${{ github.event.inputs.services_jar_url }}"
+          wget -q "${{ github.event.inputs.services_jar_url }}" -O services.jar
+          echo "Download complete. File size: $(du -sh services.jar | cut -f1)"
+
+      - name: Backup original services.jar
+        run: cp services.jar services_original.jar
+
+      - name: Extract services.jar
+        run: |
+          mkdir -p services_extracted
+          cp services.jar services_extracted/
+          cd services_extracted
+          unzip -q services.jar
+          echo "Contents of services.jar:"
+          ls -la
+
+      - name: Decompile all dex files
+        run: |
+          cd services_extracted
+          mkdir -p smali_out
+          for dex in *.dex; do
+            echo "Decompiling $dex..."
+            java -jar ../baksmali.jar d "$dex" -o "smali_out/$(basename $dex .dex)"
+          done
+
+      - name: Patch - FaceService getDeclaredInstances
+        run: |
+          python3 << 'EOF'
+          import os, re
+
+          smali_dirs = []
+          for root, dirs, files in os.walk("services_extracted/smali_out"):
+              for f in files:
+                  if f == "FaceService.smali":
+                      smali_dirs.append(os.path.join(root, f))
+
+          target = None
+          for path in smali_dirs:
+              if "biometrics/sensors/face" in path:
+                  target = path
+                  break
+
+          if not target:
+              print("FaceService.smali not found!")
+              exit(1)
+
+          print(f"Found FaceService.smali at: {target}")
+
+          with open(target, 'r') as f:
+              content = f.read()
+
+          new_method = """.method public static getDeclaredInstances()[Ljava/lang/String;
+              .registers 3
+
+              const/4 v0, 0x1
+
+              new-array v0, v0, [Ljava/lang/String;
+
+              const-string v1, "default"
+
+              const/4 v2, 0x0
+
+              aput-object v1, v0, v2
+
+              return-object v0
+          .end method"""
+
+          pattern = r'\.method public static getDeclaredInstances\(\)\[Ljava/lang/String;.*?\.end method'
+          if re.search(pattern, content, re.DOTALL):
+              content = re.sub(pattern, new_method, content, flags=re.DOTALL)
+              print("Patched getDeclaredInstances successfully")
+          else:
+              print("getDeclaredInstances not found, skipping")
+
+          with open(target, 'w') as f:
+              f.write(content)
+          EOF
+
+      - name: Patch - FaceProvider initSensors
+        run: |
+          python3 << 'EOF'
+          import os, re
+
+          target = None
+          for root, dirs, files in os.walk("services_extracted/smali_out"):
+              for f in files:
+                  if f == "FaceProvider.smali":
+                      path = os.path.join(root, f)
+                      if "aidl" in path:
+                          target = path
+                          break
+
+          if not target:
+              print("FaceProvider.smali not found!")
+              exit(1)
+
+          print(f"Found FaceProvider.smali at: {target}")
+
+          with open(target, 'r') as f:
+              content = f.read()
+
+          new_initSensors = """.method private initSensors(Z[Landroid/hardware/biometrics/face/SensorProps;)V
+              .registers 12
+
+              iget-object v0, p0, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->mContext:Landroid/content/Context;
+
+              invoke-static {v0}, Lax/nd/faceunlock/FaceAuthBridge;->init(Landroid/content/Context;)V
+
+              new-instance v0, Landroid/hardware/biometrics/face/SensorProps;
+
+              invoke-direct {v0}, Landroid/hardware/biometrics/face/SensorProps;-><init>()V
+
+              new-instance v1, Landroid/hardware/biometrics/common/CommonProps;
+
+              invoke-direct {v1}, Landroid/hardware/biometrics/common/CommonProps;-><init>()V
+
+              const/4 v2, 0x1
+
+              iput v2, v1, Landroid/hardware/biometrics/common/CommonProps;->sensorId:I
+
+              iput-object v1, v0, Landroid/hardware/biometrics/face/SensorProps;->commonProps:Landroid/hardware/biometrics/common/CommonProps;
+
+              const/4 v1, 0x0
+
+              invoke-direct {p0, v0, v1}, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->addAidlSensors(Landroid/hardware/biometrics/face/SensorProps;Z)V
+
+              invoke-static {}, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->getExtImpl()Lcom/android/server/biometrics/sensors/face/aidl/IFaceProviderExt;
+
+              move-result-object v2
+
+              move-object v3, p0
+
+              iget-object v4, p0, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->mContext:Landroid/content/Context;
+
+              const/4 v1, 0x1
+
+              new-array v5, v1, [Landroid/hardware/biometrics/face/SensorProps;
+
+              const/4 v1, 0x0
+
+              aput-object v0, v5, v1
+
+              iget-object v6, p0, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->mHalInstanceName:Ljava/lang/String;
+
+              iget-object v7, p0, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->mHandler:Landroid/os/Handler;
+
+              invoke-interface/range {v2 .. v7}, Lcom/android/server/biometrics/sensors/face/aidl/IFaceProviderExt;->init(Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;Landroid/content/Context;[Landroid/hardware/biometrics/face/SensorProps;Ljava/lang/String;Landroid/os/Handler;)V
+
+              return-void
+          .end method"""
+
+          pattern = r'\.method private initSensors\(Z\[Landroid/hardware/biometrics/face/SensorProps;\)V.*?\.end method'
+          if re.search(pattern, content, re.DOTALL):
+              content = re.sub(pattern, new_initSensors, content, flags=re.DOTALL)
+              print("Patched initSensors successfully")
+          else:
+              print("initSensors not found, skipping")
+
+          with open(target, 'w') as f:
+              f.write(content)
+          EOF
+
+      - name: Patch - FaceProvider multiple methods
+        run: |
+          python3 << 'PYEOF'
+          import os, re
+
+          target = None
+          for root, dirs, files in os.walk("services_extracted/smali_out"):
+              for f in files:
+                  if f == "FaceProvider.smali":
+                      path = os.path.join(root, f)
+                      if "aidl" in path:
+                          target = path
+                          break
+
+          with open(target, 'r') as f:
+              content = f.read()
+
+          patches = {
+              r'\.method public cancelAuthentication\(ILandroid/os/IBinder;J\)V.*?\.end method':
+              """.method public cancelAuthentication(ILandroid/os/IBinder;J)V
+              .registers 8
+              .param p1, "sensorId"  # I
+              .param p2, "token"  # Landroid/os/IBinder;
+              .param p3, "requestId"  # J
+              invoke-static {}, Lax/nd/faceunlock/FaceAuthBridge;->getInstance()Lax/nd/faceunlock/FaceAuthBridge;
+              move-result-object v0
+              if-eqz v0, :cond_10
+              invoke-virtual {v0}, Lax/nd/faceunlock/FaceAuthBridge;->stopAuthenticate()V
+              :cond_10
+              return-void
+          .end method""",
+
+              r'\.method public cancelEnrollment\(ILandroid/os/IBinder;J\)V.*?\.end method':
+              """.method public cancelEnrollment(ILandroid/os/IBinder;J)V
+              .registers 8
+              .param p1, "sensorId"  # I
+              .param p2, "token"  # Landroid/os/IBinder;
+              .param p3, "requestId"  # J
+              invoke-static {}, Lax/nd/faceunlock/FaceAuthBridge;->getInstance()Lax/nd/faceunlock/FaceAuthBridge;
+              move-result-object v0
+              if-eqz v0, :cond_10
+              invoke-virtual {v0}, Lax/nd/faceunlock/FaceAuthBridge;->stopEnroll()V
+              :cond_10
+              return-void
+          .end method""",
+
+              r'\.method public getAuthenticatorId\(II\)J.*?\.end method':
+              """.method public getAuthenticatorId(II)J
+              .registers 7
+              .param p1, "sensorId"  # I
+              .param p2, "userId"  # I
+              invoke-static {}, Lax/nd/faceunlock/FaceAuthBridge;->getInstance()Lax/nd/faceunlock/FaceAuthBridge;
+              move-result-object v0
+              if-eqz v0, :cond_12
+              invoke-virtual {v0}, Lax/nd/faceunlock/FaceAuthBridge;->getAuthenticatorId()J
+              move-result-wide v0
+              return-wide v0
+              :cond_12
+              const-wide/16 v0, 0x0
+              return-wide v0
+          .end method""",
+
+              r'\.method public isHardwareDetected\(I\)Z.*?\.end method':
+              """.method public isHardwareDetected(I)Z
+              .registers 4
+              .param p1, "sensorId"  # I
+              const/4 v0, 0x1
+              return v0
+          .end method""",
+          }
+
+          for pattern, replacement in patches.items():
+              if re.search(pattern, content, re.DOTALL):
+                  content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+                  print(f"Patched method successfully")
+              else:
+                  print(f"Method not found for pattern, skipping")
+
+          with open(target, 'w') as f:
+              f.write(content)
+          print("FaceProvider methods patched!")
+          PYEOF
+
+      - name: Patch - Disable Secure Screenshots (WindowManagerService)
+        run: |
+          python3 << 'EOF'
+          import os, re
+
+          target = None
+          for root, dirs, files in os.walk("services_extracted/smali_out"):
+              for f in files:
+                  if f == "WindowManagerService.smali":
+                      target = os.path.join(root, f)
+                      break
+
+          if not target:
+              print("WindowManagerService.smali not found!")
+              exit(1)
+
+          print(f"Found WindowManagerService.smali at: {target}")
+
+          with open(target, 'r') as f:
+              content = f.read()
+
+          new_method = """.method public notifyScreenshotListeners(I)Ljava/util/List;
+          .locals 1
+          invoke-static {}, Ljava/util/Collections;->emptyList()Ljava/util/List;
+          move-result-object v0
+          return-object v0
+          .end method"""
+
+          pattern = r'\.method public notifyScreenshotListeners.*?\.end method'
+          if re.search(pattern, content, re.DOTALL):
+              content = re.sub(pattern, new_method, content, flags=re.DOTALL)
+              print("Patched notifyScreenshotListeners successfully")
+          else:
+              print("notifyScreenshotListeners not found, skipping")
+
+          with open(target, 'w') as f:
+              f.write(content)
+          EOF
+
+      - name: Patch - Disable Secure Screenshots (WindowState)
+        run: |
+          python3 << 'EOF'
+          import os, re
+
+          target = None
+          for root, dirs, files in os.walk("services_extracted/smali_out"):
+              for f in files:
+                  if f == "WindowState.smali":
+                      target = os.path.join(root, f)
+                      break
+
+          if not target:
+              print("WindowState.smali not found!")
+              exit(1)
+
+          print(f"Found WindowState.smali at: {target}")
+
+          with open(target, 'r') as f:
+              content = f.read()
+
+          new_method = """.method isSecureLocked()Z
+          .locals 1
+          const/4 v0, 0x0
+          return v0
+          .end method"""
+
+          pattern = r'\.method isSecureLocked\(\)Z.*?\.end method'
+          if re.search(pattern, content, re.DOTALL):
+              content = re.sub(pattern, new_method, content, flags=re.DOTALL)
+              print("Patched isSecureLocked successfully")
+          else:
+              print("isSecureLocked not found, skipping")
+
+          with open(target, 'w') as f:
+              f.write(content)
+          EOF
+
+      - name: Recompile dex files
+        run: |
+          cd services_extracted
+          for dir in smali_out/*/; do
+            name=$(basename "$dir")
+            echo "Recompiling $name..."
+            java -jar ../smali.jar a "$dir" -o "${name}.dex"
+          done
+
+      - name: Add classes5.dex from repo
+        run: |
+          if [ -f "classes5.dex" ]; then
+            echo "Found classes5.dex in repo, copying..."
+            cp classes5.dex services_extracted/classes5.dex
+          else
+            echo "WARNING: classes5.dex not found in repo root! Skipping..."
+          fi
+
+      - name: Repack services.jar (no re-sign)
+        run: |
+          cd services_extracted
+          # Remove old dex files from jar
+          zip -d services.jar "*.dex" 2>/dev/null || true
+          # Add recompiled dex files
+          zip -0 services.jar *.dex
+          mv services.jar ../services_patched.jar
+          echo "Repacked successfully!"
+
+      - name: Extract #Gabut.zip (libs)
+        run: |
+          if [ -f "#Gabut.zip" ]; then
+            echo "Extracting #Gabut.zip..."
+            mkdir -p gabut_extracted
+            unzip -q "#Gabut.zip" -d gabut_extracted
+            echo "Contents:"
+            ls -la gabut_extracted
+          else
+            echo "WARNING: #Gabut.zip not found!"
+          fi
+
+      - name: Prepare output package
+        run: |
+          mkdir -p output
+          cp services_patched.jar output/
+          if [ -d "gabut_extracted" ]; then
+            cp -r gabut_extracted/. output/
+          fi
+          echo "Output contents:"
+          ls -la output/
+
+      - name: Upload full output (services + libs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-output
+          path: output/
+          retention-days: 7
+
+      - name: Upload original services.jar (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: services-original-backup
+          path: services_original.jar
+          retention-days: 7
