@@ -28,30 +28,28 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y wget unzip zip python3 p7zip-full
 
-      - name: Download services.jar
-        run: |
+       - name: Download services.jar
+       run: |
           URL="${{ github.event.inputs.services_jar_url }}"
           
-          # Ambil ID Pixeldrain jika ada
-          PD_ID=$(echo "$URL" | grep -oP '(?<=pixeldrain\.com/u/)[^?]+')
+          # Membersihkan link dan konversi Pixeldrain ke Direct API
+          # Cara ini lebih simpel dan jarang gagal di bash
+          FINAL_URL=$(echo "$URL" | sed 's|pixeldrain.com/u/|pixeldrain.com/api/file/|g')
 
-          if [ -n "$PD_ID" ]; then
-            echo "Detected pixeldrain, using API path..."
-            FINAL_URL="https://pixeldrain.com/api/file/${PD_ID}"
-          else
-            FINAL_URL="$URL"
-          fi
+          echo "Target URL: $FINAL_URL"
 
-          echo "Downloading from: $FINAL_URL"
-
-          # Wget dengan penyamaran User-Agent dan retry otomatis
-          wget -q --show-progress --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+          # Menggunakan wget dengan header lengkap agar dikira browser sungguhan
+          # --no-check-certificate ditambah untuk menghindari error SSL di beberapa environment
+          wget -v --no-check-certificate \
+               --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" \
+               --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" \
+               --header="Accept-Language: en-US,en;q=0.5" \
                --header="Referer: https://pixeldrain.com/" \
-               --tries=3 \
-               --timeout=30 \
-               "$FINAL_URL" -O services.jar || { echo "Download failed!"; exit 1; }
+               --header="Connection: keep-alive" \
+               --header="Upgrade-Insecure-Requests: 1" \
+               "$FINAL_URL" -O services.jar || { echo "❌ Download Gagal!"; exit 1; }
 
-          echo "Size: $(du -sh services.jar | cut -f1)"
+          echo "✅ Download Selesai: $(du -sh services.jar)"
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
