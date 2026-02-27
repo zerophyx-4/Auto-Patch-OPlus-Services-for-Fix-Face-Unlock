@@ -28,39 +28,9 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y wget unzip zip python3 p7zip-full
 
-      - name: Download apktool
-        run: |
-          mkdir -p tools
-          curl -L -o tools/apktool.jar \
-            "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
-          echo "apktool size: $(du -sh tools/apktool.jar)"
-
       - name: Download services.jar
         run: |
-          python3 -c "
-          import urllib.request
-          import re
-          import os
-
-          url = '${{ github.event.inputs.services_jar_url }}'.strip()
-          
-          # Logic Pixeldrain API
-          if 'pixeldrain.com/u/' in url:
-              pd_id = re.search(r'\/u\/([^?\/]+)', url).group(1)
-              url = f'https://pixeldrain.com/api/file/{pd_id}'
-          
-          print(f'Attempting download from: {url}')
-          
-          req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
-          
-          try:
-              with urllib.request.urlopen(req) as response, open('services.jar', 'wb') as out_file:
-                  out_file.write(response.read())
-              print('Download Success!')
-          except Exception as e:
-              print(f'Error: {e}')
-              exit(1)
-        "
+          wget -O services.jar "${{ github.event.inputs.services_url }}"
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
