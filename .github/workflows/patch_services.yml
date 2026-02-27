@@ -37,9 +37,15 @@ jobs:
 
       - name: Download services.jar
         run: |
-          echo "Downloading services.jar from: ${{ github.event.inputs.services_jar_url }}"
-          wget -q "${{ github.event.inputs.services_jar_url }}" -O services.jar
-          echo "Download complete. File size: $(du -sh services.jar | cut -f1)"
+          # Try pixeldrain via API
+          PD_ID=$(echo "${{ github.event.inputs.services_jar_url }}" | grep -oP '(?<=pixeldrain\.com/u/)[^?]+')
+          if [ -n "$PD_ID" ]; then
+            echo "Detected pixeldrain, using API..."
+            wget -q "https://pixeldrain.com/api/file/${PD_ID}" -O services.jar
+          else
+            wget -q "${{ github.event.inputs.services_jar_url }}" -O services.jar
+          fi
+          echo "Size: $(du -sh services.jar | cut -f1)"
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
