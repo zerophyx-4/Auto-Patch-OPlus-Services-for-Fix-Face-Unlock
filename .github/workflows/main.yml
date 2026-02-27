@@ -1,0 +1,57 @@
+name: Auto Patch Services
+
+on:
+  workflow_dispatch:
+    inputs:
+      jar_url:
+        description: 'Direct Link to services.jar'
+        required: true
+
+jobs:
+  patch_job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Environment
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3 zip unzip
+          mkdir -p bin
+          curl -L https://bitbucket.org/JesusFreke/smali/downloads/baksmali-2.5.2.jar -o bin/baksmali.jar
+          curl -L https://bitbucket.org/JesusFreke/smali/downloads/smali-2.5.2.jar -o bin/smali.jar
+
+      - name: Download & Unpack
+        run: |
+          curl -L "${{ github.event.inputs.jar_url }}" -o services.jar
+          # Unpack/Decompile
+          java -jar bin/baksmali.jar d services.jar -o out_smali
+
+      - name: Replace Method (Python Patcher)
+        run: python3 scripts/patcher.py
+
+      - name: Rebuild & Add Class
+        run: |
+          # Rebuild smali ke dex
+          java -jar bin/smali.jar a out_smali/ -o services_patched.jar
+          # Inject classes5.dex (Add Class)
+          zip -u services_patched.jar classes5.dex
+
+      - name: Auto Sign Off (Remove Original Signature)
+        run: |
+          # Menghapus folder META-INF agar sistem Android melakukan re-index 
+          # dan tidak bentrok dengan signature original (Auto Sign Off)
+          zip -d services_patched.jar "META-INF/*" || echo "META-INF not found, skipping."
+
+      - name: Prepare Final Package
+        run: |
+          mkdir -p Motorola_Pack
+          cp services_patched.jar Motorola_Pack/services.jar
+          cp README.md Motorola_Pack/
+          cp -r system/ Motorola_Pack/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Motorola_FaceUnlock_Result
+          path: Motorola_Pack/
