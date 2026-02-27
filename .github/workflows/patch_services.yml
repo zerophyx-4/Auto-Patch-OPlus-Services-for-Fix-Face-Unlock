@@ -37,15 +37,28 @@ jobs:
 
       - name: Download services.jar
         run: |
-          # Try pixeldrain via API
-          PD_ID=$(echo "${{ github.event.inputs.services_jar_url }}" | grep -oP '(?<=pixeldrain\.com/u/)[^?]+')
-          if [ -n "$PD_ID" ]; then
-            echo "Detected pixeldrain, using API..."
-            wget -q "https://pixeldrain.com/api/file/${PD_ID}" -O services.jar
+          URL="${{ github.event.inputs.services_jar_url }}"
+          
+          # Bersihkan URL (hapus whitespace)
+          URL=$(echo "$URL" | xargs)
+
+          # Logika deteksi Pixeldrain yang lebih kuat
+          if [[ "$URL" == *"pixeldrain.com/u/"* ]]; then
+            echo "Detected pixeldrain, converting to API link..."
+            PD_ID=$(echo "$URL" | sed 's/.*\/u\/\([^?\/]*\).*/\1/')
+            FINAL_URL="https://pixeldrain.com/api/file/${PD_ID}"
           else
-            wget -q "${{ github.event.inputs.services_jar_url }}" -O services.jar
+            FINAL_URL="$URL"
           fi
+
+          echo "Downloading from: $FINAL_URL"
+          
+          # Gunakan curl dengan User-Agent browser dan follow redirect (-L)
+          # --fail akan membuat step ini error jika status code 4xx atau 5xx
+          curl -L -f -A "Mozilla/5.0" "$FINAL_URL" -o services.jar || { echo "Download failed!"; exit 1; }
+          
           echo "Size: $(du -sh services.jar | cut -f1)"
+
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
