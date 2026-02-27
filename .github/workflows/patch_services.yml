@@ -25,11 +25,11 @@ jobs:
       - name: Download baksmali & smali
         run: |
           curl -L -o baksmali.jar \
-            "https://github.com/JesusFreke/smali/releases/download/v3.0.3/baksmali-3.0.3.jar"
+            "https://repo1.maven.org/maven2/org/smali/baksmali/3.0.3/baksmali-3.0.3.jar"
           curl -L -o smali.jar \
-            "https://github.com/JesusFreke/smali/releases/download/v3.0.3/smali-3.0.3.jar"
-          echo "baksmali size: $(du -sh baksmali.jar)"
-          echo "smali size: $(du -sh smali.jar)"
+            "https://repo1.maven.org/maven2/org/smali/smali/3.0.3/smali-3.0.3.jar"
+          file baksmali.jar
+          file smali.jar
 
       - name: Download services.jar
         run: |
