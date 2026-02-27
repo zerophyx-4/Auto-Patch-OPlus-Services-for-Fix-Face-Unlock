@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       services_url:
-        description: 'Direct Link to services.jar (Pixeldrain API format)'
+        description: 'Direct link to services.jar (must be a direct download URL)'
         required: true
         default: 'https://pixeldrain.com/api/file/ocB5FvXD'
 
@@ -21,38 +21,98 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      - name: Download and Unpack
+      - name: Download and Validate services.jar
         run: |
-          # Download using the provided API link
-          curl -L "${{ github.event.inputs.services_url }}" -o services.jar
+          URL="${{ github.event.inputs.services_url }}"
+          echo "Downloading from $URL"
           
-          # Decompile using the apktool.jar inside /scripts
+          # Download dengan follow redirect, simpan HTTP status code
+          HTTP_CODE=$(curl -L -w "%{http_code}" -o services.jar "$URL" 2>/dev/null)
+          
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo "❌ HTTP error $HTTP_CODE"
+            echo "Response body:"
+            cat services.jar
+            exit 1
+          fi
+          
+          # Cek ukuran file (services.jar biasanya > 1 MB)
+          SIZE=$(stat -c%s services.jar 2>/dev/null || stat -f%z services.jar 2>/dev/null)
+          if [ "$SIZE" -lt 100000 ]; then
+            echo "❌ File terlalu kecil ($SIZE bytes). Kemungkinan bukan file JAR valid."
+            echo "50 baris pertama file:"
+            head -n 50 services.jar
+            exit 1
+          fi
+          
+          # Cek tipe file menggunakan magic bytes
+          FILE_TYPE=$(file -b --mime-type services.jar)
+          echo "Detected MIME type: $FILE_TYPE"
+          if [[ "$FILE_TYPE" != "application/zip" && "$FILE_TYPE" != "application/java-archive" && "$FILE_TYPE" != "application/octet-stream" ]]; then
+            echo "❌ File yang didownload bukan file ZIP/JAR (mime-type: $FILE_TYPE)"
+            exit 1
+          fi
+          
+          echo "✅ Download sukses, ukuran $SIZE bytes, tipe $FILE_TYPE"
+
+      - name: Backup Original META-INF and Resources
+        run: |
+          mkdir -p backup
+          # Ekstrak META-INF dan res jika ada (abaikan error)
+          unzip -o services.jar "META-INF/*" "res/*" -d backup/ 2>/dev/null || echo "Tidak ada META-INF atau res untuk di-backup"
+
+      - name: Decompile services.jar with Apktool
+        run: |
           java -jar scripts/apktool.jar d services.jar -o out_folder
+
+      - name: Restore Backup to Decompiled Folder
+        run: |
+          if [ -d backup/META-INF ]; then
+            cp -r backup/META-INF out_folder/unknown/ 2>/dev/null || echo "Gagal menyalin META-INF"
+          fi
+          if [ -d backup/res ]; then
+            cp -r backup/res out_folder/unknown/ 2>/dev/null || echo "Gagal menyalin res"
+          fi
 
       - name: Execute Python Patcher
         run: python3 scripts/patcher.py
 
       - name: Repack and Inject Class
         run: |
-          # Build modified smali back to JAR
+          # Bangun ulang smali yang sudah dipatch menjadi JAR
           java -jar scripts/apktool.jar b out_folder -o services_patched.jar
           
-          # Inject classes5.dex into the patched JAR
-          zip -u services_patched.jar classes5.dex
+          # Inject classes5.dex jika ada
+          if [ -f classes5.dex ]; then
+            zip -u services_patched.jar classes5.dex
+            echo "✅ Injected classes5.dex"
+          else
+            echo "⚠️ classes5.dex tidak ditemukan, lewati inject"
+          fi
           
-          # Auto Sign Off: Remove original signature
-          zip -d services_patched.jar "META-INF/*"
+          # Hapus signature asli (auto sign off)
+          zip -d services_patched.jar "META-INF/*" || echo "Tidak ada META-INF untuk dihapus"
 
       - name: Prepare Output Package
         run: |
-          # Organize files into a final folder
           mkdir -p final_output
           cp services_patched.jar final_output/services.jar
-          cp -r system final_output/
-          cp README.md final_output/ || true
+          
+          # Salin folder system jika ada
+          if [ -d system ]; then
+            cp -r system final_output/
+          else
+            echo "⚠️ Folder system tidak ditemukan, lewati"
+          fi
+          
+          # Salin README.md jika ada
+          if [ -f README.md ]; then
+            cp README.md final_output/
+          fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Patched_FaceUnlock_Build
           path: final_output/
+          
