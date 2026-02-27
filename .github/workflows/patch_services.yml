@@ -17,19 +17,23 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
       - name: Install dependencies
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y wget unzip zip python3
+          sudo apt-get install -y wget unzip zip python3 p7zip-full
 
-      - name: Download baksmali & smali
+      - name: Download apktool
         run: |
-          curl -L -o baksmali.jar \
-            "https://repo1.maven.org/maven2/org/smali/baksmali/3.0.3/baksmali-3.0.3.jar"
-          curl -L -o smali.jar \
-            "https://repo1.maven.org/maven2/org/smali/smali/3.0.3/smali-3.0.3.jar"
-          file baksmali.jar
-          file smali.jar
+          mkdir -p tools
+          curl -L -o tools/apktool.jar \
+            "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
+          echo "apktool size: $(du -sh tools/apktool.jar)"
 
       - name: Download services.jar
         run: |
@@ -40,47 +44,36 @@ jobs:
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
 
-      - name: Extract services.jar
+      - name: Decompile services.jar
         run: |
-          mkdir -p services_extracted
-          cp services.jar services_extracted/
-          cd services_extracted
-          unzip -q services.jar
-          echo "Contents of services.jar:"
-          ls -la
-
-      - name: Decompile all dex files
-        run: |
-          cd services_extracted
-          mkdir -p smali_out
-          for dex in *.dex; do
-            echo "Decompiling $dex..."
-            java -jar ../baksmali.jar d "$dex" -o "smali_out/$(basename $dex .dex)"
-          done
+          mkdir -p backup/services
+          unzip -o services.jar "META-INF/*" "res/*" -d backup/services >/dev/null 2>&1 || true
+          java -jar tools/apktool.jar d -q -f services.jar -o services_decompile
+          mkdir -p services_decompile/unknown
+          cp -r backup/services/res services_decompile/unknown/ 2>/dev/null || true
+          cp -r backup/services/META-INF services_decompile/unknown/ 2>/dev/null || true
+          echo "Decompile done!"
+          ls services_decompile/
 
       - name: Patch - FaceService getDeclaredInstances
         run: |
           python3 << 'EOF'
           import os, re
 
-          smali_dirs = []
-          for root, dirs, files in os.walk("services_extracted/smali_out"):
+          target = None
+          for root, dirs, files in os.walk("services_decompile"):
               for f in files:
                   if f == "FaceService.smali":
-                      smali_dirs.append(os.path.join(root, f))
-
-          target = None
-          for path in smali_dirs:
-              if "biometrics/sensors/face" in path:
-                  target = path
-                  break
+                      path = os.path.join(root, f)
+                      if "biometrics/sensors/face" in path:
+                          target = path
+                          break
 
           if not target:
-              print("FaceService.smali not found!")
-              exit(1)
+              print("FaceService.smali not found, skipping")
+              exit(0)
 
-          print(f"Found FaceService.smali at: {target}")
-
+          print(f"Found: {target}")
           with open(target, 'r') as f:
               content = f.read()
 
@@ -103,7 +96,7 @@ jobs:
           pattern = r'\.method public static getDeclaredInstances\(\)\[Ljava/lang/String;.*?\.end method'
           if re.search(pattern, content, re.DOTALL):
               content = re.sub(pattern, new_method, content, flags=re.DOTALL)
-              print("Patched getDeclaredInstances successfully")
+              print("Patched getDeclaredInstances!")
           else:
               print("getDeclaredInstances not found, skipping")
 
@@ -117,7 +110,7 @@ jobs:
           import os, re
 
           target = None
-          for root, dirs, files in os.walk("services_extracted/smali_out"):
+          for root, dirs, files in os.walk("services_decompile"):
               for f in files:
                   if f == "FaceProvider.smali":
                       path = os.path.join(root, f)
@@ -126,15 +119,14 @@ jobs:
                           break
 
           if not target:
-              print("FaceProvider.smali not found!")
-              exit(1)
+              print("FaceProvider.smali not found, skipping")
+              exit(0)
 
-          print(f"Found FaceProvider.smali at: {target}")
-
+          print(f"Found: {target}")
           with open(target, 'r') as f:
               content = f.read()
 
-          new_initSensors = """.method private initSensors(Z[Landroid/hardware/biometrics/face/SensorProps;)V
+          new_method = """.method private initSensors(Z[Landroid/hardware/biometrics/face/SensorProps;)V
               .registers 12
 
               iget-object v0, p0, Lcom/android/server/biometrics/sensors/face/aidl/FaceProvider;->mContext:Landroid/content/Context;
@@ -186,8 +178,8 @@ jobs:
 
           pattern = r'\.method private initSensors\(Z\[Landroid/hardware/biometrics/face/SensorProps;\)V.*?\.end method'
           if re.search(pattern, content, re.DOTALL):
-              content = re.sub(pattern, new_initSensors, content, flags=re.DOTALL)
-              print("Patched initSensors successfully")
+              content = re.sub(pattern, new_method, content, flags=re.DOTALL)
+              print("Patched initSensors!")
           else:
               print("initSensors not found, skipping")
 
@@ -201,13 +193,17 @@ jobs:
           import os, re
 
           target = None
-          for root, dirs, files in os.walk("services_extracted/smali_out"):
+          for root, dirs, files in os.walk("services_decompile"):
               for f in files:
                   if f == "FaceProvider.smali":
                       path = os.path.join(root, f)
                       if "aidl" in path:
                           target = path
                           break
+
+          if not target:
+              print("FaceProvider.smali not found, skipping")
+              exit(0)
 
           with open(target, 'r') as f:
               content = f.read()
@@ -269,13 +265,13 @@ jobs:
           for pattern, replacement in patches.items():
               if re.search(pattern, content, re.DOTALL):
                   content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-                  print(f"Patched method successfully")
+                  print(f"Patched method!")
               else:
-                  print(f"Method not found for pattern, skipping")
+                  print(f"Method not found, skipping")
 
           with open(target, 'w') as f:
               f.write(content)
-          print("FaceProvider methods patched!")
+          print("FaceProvider methods done!")
           PYEOF
 
       - name: Patch - Disable Secure Screenshots (WindowManagerService)
@@ -284,18 +280,17 @@ jobs:
           import os, re
 
           target = None
-          for root, dirs, files in os.walk("services_extracted/smali_out"):
+          for root, dirs, files in os.walk("services_decompile"):
               for f in files:
                   if f == "WindowManagerService.smali":
                       target = os.path.join(root, f)
                       break
 
           if not target:
-              print("WindowManagerService.smali not found!")
-              exit(1)
+              print("WindowManagerService.smali not found, skipping")
+              exit(0)
 
-          print(f"Found WindowManagerService.smali at: {target}")
-
+          print(f"Found: {target}")
           with open(target, 'r') as f:
               content = f.read()
 
@@ -309,7 +304,7 @@ jobs:
           pattern = r'\.method public notifyScreenshotListeners.*?\.end method'
           if re.search(pattern, content, re.DOTALL):
               content = re.sub(pattern, new_method, content, flags=re.DOTALL)
-              print("Patched notifyScreenshotListeners successfully")
+              print("Patched notifyScreenshotListeners!")
           else:
               print("notifyScreenshotListeners not found, skipping")
 
@@ -323,18 +318,17 @@ jobs:
           import os, re
 
           target = None
-          for root, dirs, files in os.walk("services_extracted/smali_out"):
+          for root, dirs, files in os.walk("services_decompile"):
               for f in files:
                   if f == "WindowState.smali":
                       target = os.path.join(root, f)
                       break
 
           if not target:
-              print("WindowState.smali not found!")
-              exit(1)
+              print("WindowState.smali not found, skipping")
+              exit(0)
 
-          print(f"Found WindowState.smali at: {target}")
-
+          print(f"Found: {target}")
           with open(target, 'r') as f:
               content = f.read()
 
@@ -347,7 +341,7 @@ jobs:
           pattern = r'\.method isSecureLocked\(\)Z.*?\.end method'
           if re.search(pattern, content, re.DOTALL):
               content = re.sub(pattern, new_method, content, flags=re.DOTALL)
-              print("Patched isSecureLocked successfully")
+              print("Patched isSecureLocked!")
           else:
               print("isSecureLocked not found, skipping")
 
@@ -355,64 +349,42 @@ jobs:
               f.write(content)
           EOF
 
-      - name: Recompile dex files
-        run: |
-          cd services_extracted
-          for dir in smali_out/*/; do
-            name=$(basename "$dir")
-            echo "Recompiling $name..."
-            java -jar ../smali.jar a "$dir" -o "${name}.dex"
-          done
-
-      - name: Add classes5.dex from repo
+      - name: Add classes5.dex to decompile dir
         run: |
           if [ -f "classes5.dex" ]; then
-            echo "Found classes5.dex in repo, copying..."
-            cp classes5.dex services_extracted/classes5.dex
+            echo "Found classes5.dex, copying..."
+            cp classes5.dex services_decompile/classes5/
           else
-            echo "WARNING: classes5.dex not found in repo root! Skipping..."
+            echo "WARNING: classes5.dex not found!"
           fi
 
-      - name: Repack services.jar (no re-sign)
+      - name: Recompile services.jar
         run: |
-          cd services_extracted
-          # Remove old dex files from jar
-          zip -d services.jar "*.dex" 2>/dev/null || true
-          # Add recompiled dex files
-          zip -0 services.jar *.dex
-          mv services.jar ../services_patched.jar
-          echo "Repacked successfully!"
+          java -jar tools/apktool.jar b -q -f services_decompile -o services_patched.jar
+          echo "Recompile done! Size: $(du -sh services_patched.jar)"
 
-      - name: Extract #Gabut.zip (libs)
-        run: |
-          if [ -f "#Gabut.zip" ]; then
-            echo "Extracting #Gabut.zip..."
-            mkdir -p gabut_extracted
-            unzip -q "#Gabut.zip" -d gabut_extracted
-            echo "Contents:"
-            ls -la gabut_extracted
-          else
-            echo "WARNING: #Gabut.zip not found!"
-          fi
-
-      - name: Prepare output package
+      - name: Extract #Gabut.zip and prepare output
         run: |
           mkdir -p output
           cp services_patched.jar output/
-          if [ -d "gabut_extracted" ]; then
-            cp -r gabut_extracted/. output/
+          if [ -f "#Gabut.zip" ]; then
+            echo "Extracting #Gabut.zip..."
+            unzip -q "#Gabut.zip" -d output/
+            echo "Extracted!"
+          else
+            echo "WARNING: #Gabut.zip not found!"
           fi
           echo "Output contents:"
           ls -la output/
 
-      - name: Upload full output (services + libs)
+      - name: Upload full output
         uses: actions/upload-artifact@v4
         with:
           name: patched-output
           path: output/
           retention-days: 7
 
-      - name: Upload original services.jar (backup)
+      - name: Upload original backup
         uses: actions/upload-artifact@v4
         with:
           name: services-original-backup
