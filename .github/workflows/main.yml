@@ -1,22 +1,58 @@
-      - name: Download & Unpack
+name: Auto Patch FaceUnlock
+
+on:
+  workflow_dispatch:
+    inputs:
+      services_url:
+        description: 'Direct Link to services.jar (Pixeldrain API format)'
+        required: true
+        default: 'https://pixeldrain.com/api/file/ocB5FvXD'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java Environment
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Download and Unpack
         run: |
-          # Use API link to get the actual JAR file
-          curl -L "https://pixeldrain.com/api/file/ocB5FvXD" -o services.jar
-          # Decompile using apktool located in /scripts
+          # Download using the provided API link
+          curl -L "${{ github.event.inputs.services_url }}" -o services.jar
+          
+          # Decompile using the apktool.jar inside /scripts
           java -jar scripts/apktool.jar d services.jar -o out_folder
 
-      - name: Run Python Patcher
+      - name: Execute Python Patcher
         run: python3 scripts/patcher.py
 
-      - name: Rebuild JAR
+      - name: Repack and Inject Class
         run: |
-          # Build the modified folder back into a JAR
+          # Build modified smali back to JAR
           java -jar scripts/apktool.jar b out_folder -o services_patched.jar
-          # Update the JAR with your classes5.dex
-          zip -u services_patched.jar classes5.dex
-
-      - name: Cleanup Signature (Auto Sign Off)
-        run: |
-          # Remove META-INF to disable original signature
-          zip -d services_patched.jar "META-INF/*"
           
+          # Inject classes5.dex into the patched JAR
+          zip -u services_patched.jar classes5.dex
+          
+          # Auto Sign Off: Remove original signature
+          zip -d services_patched.jar "META-INF/*"
+
+      - name: Prepare Output Package
+        run: |
+          # Organize files into a final folder
+          mkdir -p final_output
+          cp services_patched.jar final_output/services.jar
+          cp -r system final_output/
+          cp README.md final_output/ || true
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Patched_FaceUnlock_Build
+          path: final_output/
