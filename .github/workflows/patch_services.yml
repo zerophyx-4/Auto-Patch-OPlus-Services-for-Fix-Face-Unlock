@@ -35,23 +35,32 @@ jobs:
             "https://github.com/iBotPeaches/Apktool/releases/download/v2.9.3/apktool_2.9.3.jar"
           echo "apktool size: $(du -sh tools/apktool.jar)"
 
-       - name: Download services.jar
+      - name: Download services.jar
         run: |
           URL="${{ github.event.inputs.services_jar_url }}"
-          # Deteksi Pixeldrain dan ubah ke format API
+          URL=$(echo "$URL" | xargs) # Hapus spasi liar
+
           if [[ "$URL" == *"pixeldrain.com/u/"* ]]; then
+            echo "Detected Pixeldrain, switching to API..."
             PD_ID=$(echo "$URL" | sed 's/.*\/u\/\([^?\/]*\).*/\1/')
             FINAL_URL="https://pixeldrain.com/api/file/${PD_ID}"
+          elif [[ "$URL" == *"gofile.io/d/"* ]]; then
+            echo "Warning: Gofile link detected. Make sure it's a DIRECT link!"
+            FINAL_URL="$URL"
           else
             FINAL_URL="$URL"
           fi
 
-          echo "Downloading from: $FINAL_URL"
-          
-          # Baris sakti curl untuk mengelabui proteksi bot
-          curl -L -f -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" "$FINAL_URL" -o services.jar || { echo "Download failed!"; exit 1; }
-          
-          echo "Size: $(du -sh services.jar | cut -f1)"
+          echo "Downloading: $FINAL_URL"
+
+          # Menggunakan Curl dengan User-Agent Browser agar tidak diblokir (Error 403)
+          curl -L -f -k -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+               "$FINAL_URL" -o services.jar || {
+                 echo "Download failed! Server blocked GitHub or Link is dead."
+                 exit 1
+               }
+
+          echo "Download Success! Size: $(du -sh services.jar | cut -f1)"
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
