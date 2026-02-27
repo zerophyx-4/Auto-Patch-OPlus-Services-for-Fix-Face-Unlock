@@ -37,30 +37,30 @@ jobs:
 
       - name: Download services.jar
         run: |
-          URL="${{ github.event.inputs.services_jar_url }}"
-          URL=$(echo "$URL" | xargs) # Hapus spasi liar
+          python3 -c "
+          import urllib.request
+          import re
+          import os
 
-          if [[ "$URL" == *"pixeldrain.com/u/"* ]]; then
-            echo "Detected Pixeldrain, switching to API..."
-            PD_ID=$(echo "$URL" | sed 's/.*\/u\/\([^?\/]*\).*/\1/')
-            FINAL_URL="https://pixeldrain.com/api/file/${PD_ID}"
-          elif [[ "$URL" == *"gofile.io/d/"* ]]; then
-            echo "Warning: Gofile link detected. Make sure it's a DIRECT link!"
-            FINAL_URL="$URL"
-          else
-            FINAL_URL="$URL"
-          fi
-
-          echo "Downloading: $FINAL_URL"
-
-          # Menggunakan Curl dengan User-Agent Browser agar tidak diblokir (Error 403)
-          curl -L -f -k -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               "$FINAL_URL" -o services.jar || {
-                 echo "Download failed! Server blocked GitHub or Link is dead."
-                 exit 1
-               }
-
-          echo "Download Success! Size: $(du -sh services.jar | cut -f1)"
+          url = '${{ github.event.inputs.services_jar_url }}'.strip()
+          
+          # Logic Pixeldrain API
+          if 'pixeldrain.com/u/' in url:
+              pd_id = re.search(r'\/u\/([^?\/]+)', url).group(1)
+              url = f'https://pixeldrain.com/api/file/{pd_id}'
+          
+          print(f'Attempting download from: {url}')
+          
+          req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
+          
+          try:
+              with urllib.request.urlopen(req) as response, open('services.jar', 'wb') as out_file:
+                  out_file.write(response.read())
+              print('Download Success!')
+          except Exception as e:
+              print(f'Error: {e}')
+              exit(1)
+        "
 
       - name: Backup original services.jar
         run: cp services.jar services_original.jar
