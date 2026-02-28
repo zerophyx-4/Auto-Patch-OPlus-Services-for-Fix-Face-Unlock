@@ -21,45 +21,71 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      # ------------------------------------------------------------
+      # Improved download step with better diagnostics and fallbacks
+      # ------------------------------------------------------------
       - name: Download and Validate services.jar
         run: |
           URL="${{ github.event.inputs.services_url }}"
-          echo "Downloading from $URL"
-          
-          # Download dengan follow redirect, simpan HTTP status code
-          HTTP_CODE=$(curl -L -w "%{http_code}" -o services.jar "$URL" 2>/dev/null)
-          
+          echo "Downloading from: $URL"
+
+          # Use a realistic User-Agent to avoid being blocked
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          # Download with follow redirects, capture HTTP code and headers
+          HTTP_CODE=$(curl -L -A "$UA" -w "%{http_code}" -o services.jar -D headers.txt "$URL" 2>/dev/null)
+
+          echo "HTTP response code: $HTTP_CODE"
+          echo "Response headers:"
+          cat headers.txt
+
+          # If not 200, show first 20 lines of what we downloaded (often an error page)
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "❌ HTTP error $HTTP_CODE"
-            echo "Response body:"
-            cat services.jar
+            echo "First 20 lines of downloaded content:"
+            head -n 20 services.jar
             exit 1
           fi
-          
-          # Cek ukuran file (services.jar biasanya > 1 MB)
+
+          # Check file size (services.jar should be > 1 MB)
           SIZE=$(stat -c%s services.jar 2>/dev/null || stat -f%z services.jar 2>/dev/null)
+          echo "Downloaded size: $SIZE bytes"
           if [ "$SIZE" -lt 100000 ]; then
-            echo "❌ File terlalu kecil ($SIZE bytes). Kemungkinan bukan file JAR valid."
-            echo "50 baris pertama file:"
-            head -n 50 services.jar
+            echo "❌ File too small ($SIZE bytes) – probably not a valid JAR."
+            echo "First 20 lines:"
+            head -n 20 services.jar
             exit 1
           fi
-          
-          # Cek tipe file menggunakan magic bytes
-          FILE_TYPE=$(file -b --mime-type services.jar)
-          echo "Detected MIME type: $FILE_TYPE"
-          if [[ "$FILE_TYPE" != "application/zip" && "$FILE_TYPE" != "application/java-archive" && "$FILE_TYPE" != "application/octet-stream" ]]; then
-            echo "❌ File yang didownload bukan file ZIP/JAR (mime-type: $FILE_TYPE)"
+
+          # Verify it's a ZIP archive (JAR = ZIP)
+          if ! unzip -tq services.jar >/dev/null 2>&1; then
+            echo "❌ File is not a valid ZIP/JAR archive."
+            echo "File type: $(file -b services.jar)"
+            echo "First 20 lines:"
+            head -n 20 services.jar
             exit 1
           fi
-          
-          echo "✅ Download sukses, ukuran $SIZE bytes, tipe $FILE_TYPE"
+
+          echo "✅ Download successful, file is a valid JAR."
+
+      # ------------------------------------------------------------
+      # Ensure apktool is available (download if missing)
+      # ------------------------------------------------------------
+      - name: Ensure apktool is present
+        run: |
+          if [ ! -f scripts/apktool.jar ]; then
+            echo "⚠️ scripts/apktool.jar not found – downloading latest version..."
+            mkdir -p scripts
+            curl -L -o scripts/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
+          else
+            echo "✅ Using existing scripts/apktool.jar"
+          fi
 
       - name: Backup Original META-INF and Resources
         run: |
           mkdir -p backup
-          # Ekstrak META-INF dan res jika ada (abaikan error)
-          unzip -o services.jar "META-INF/*" "res/*" -d backup/ 2>/dev/null || echo "Tidak ada META-INF atau res untuk di-backup"
+          # Extract META-INF and res if they exist (ignore errors)
+          unzip -o services.jar "META-INF/*" "res/*" -d backup/ 2>/dev/null || echo "No META-INF or res to backup"
 
       - name: Decompile services.jar with Apktool
         run: |
@@ -68,10 +94,10 @@ jobs:
       - name: Restore Backup to Decompiled Folder
         run: |
           if [ -d backup/META-INF ]; then
-            cp -r backup/META-INF out_folder/unknown/ 2>/dev/null || echo "Gagal menyalin META-INF"
+            cp -r backup/META-INF out_folder/unknown/ 2>/dev/null || echo "Failed to copy META-INF"
           fi
           if [ -d backup/res ]; then
-            cp -r backup/res out_folder/unknown/ 2>/dev/null || echo "Gagal menyalin res"
+            cp -r backup/res out_folder/unknown/ 2>/dev/null || echo "Failed to copy res"
           fi
 
       - name: Execute Python Patcher
@@ -79,33 +105,31 @@ jobs:
 
       - name: Repack and Inject Class
         run: |
-          # Bangun ulang smali yang sudah dipatch menjadi JAR
+          # Rebuild patched smali into JAR
           java -jar scripts/apktool.jar b out_folder -o services_patched.jar
-          
-          # Inject classes5.dex jika ada
+
+          # Inject classes5.dex if present
           if [ -f classes5.dex ]; then
             zip -u services_patched.jar classes5.dex
             echo "✅ Injected classes5.dex"
           else
-            echo "⚠️ classes5.dex tidak ditemukan, lewati inject"
+            echo "⚠️ classes5.dex not found, skipping injection"
           fi
-          
-          # Hapus signature asli (auto sign off)
-          zip -d services_patched.jar "META-INF/*" || echo "Tidak ada META-INF untuk dihapus"
+
+          # Remove original signatures (auto-sign off)
+          zip -d services_patched.jar "META-INF/*" || echo "No META-INF to remove"
 
       - name: Prepare Output Package
         run: |
           mkdir -p final_output
           cp services_patched.jar final_output/services.jar
-          
-          # Salin folder system jika ada
+
           if [ -d system ]; then
             cp -r system final_output/
           else
-            echo "⚠️ Folder system tidak ditemukan, lewati"
+            echo "⚠️ system folder not found, skipping"
           fi
-          
-          # Salin README.md jika ada
+
           if [ -f README.md ]; then
             cp README.md final_output/
           fi
@@ -115,4 +139,3 @@ jobs:
         with:
           name: Patched_FaceUnlock_Build
           path: final_output/
-          
