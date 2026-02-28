@@ -6,7 +6,7 @@ on:
       services_url:
         description: 'Direct link to services.jar (must be a direct download URL)'
         required: true
-        default: 'https://pixeldrain.com/u/TWMsK4nB'
+        # default removed – user must provide a valid URL
 
 jobs:
   build:
@@ -22,11 +22,18 @@ jobs:
           java-version: '17'
 
       # ------------------------------------------------------------
-      # Improved download step with better diagnostics and fallbacks
+      # Validate input URL (not empty) and download
       # ------------------------------------------------------------
       - name: Download and Validate services.jar
         run: |
           URL="${{ github.event.inputs.services_url }}"
+          
+          # Fail early if URL is empty
+          if [ -z "$URL" ]; then
+            echo "❌ No URL provided. Please enter a valid direct download link to services.jar."
+            exit 1
+          fi
+
           echo "Downloading from: $URL"
 
           # Use a realistic User-Agent to avoid being blocked
@@ -69,7 +76,7 @@ jobs:
           echo "✅ Download successful, file is a valid JAR."
 
       # ------------------------------------------------------------
-      # Ensure apktool is available (download if missing)
+      # Ensure apktool is present (download if missing)
       # ------------------------------------------------------------
       - name: Ensure apktool is present
         run: |
@@ -84,7 +91,6 @@ jobs:
       - name: Backup Original META-INF and Resources
         run: |
           mkdir -p backup
-          # Extract META-INF and res if they exist (ignore errors)
           unzip -o services.jar "META-INF/*" "res/*" -d backup/ 2>/dev/null || echo "No META-INF or res to backup"
 
       - name: Decompile services.jar with Apktool
@@ -105,10 +111,8 @@ jobs:
 
       - name: Repack and Inject Class
         run: |
-          # Rebuild patched smali into JAR
           java -jar scripts/apktool.jar b out_folder -o services_patched.jar
 
-          # Inject classes5.dex if present
           if [ -f classes5.dex ]; then
             zip -u services_patched.jar classes5.dex
             echo "✅ Injected classes5.dex"
@@ -116,7 +120,6 @@ jobs:
             echo "⚠️ classes5.dex not found, skipping injection"
           fi
 
-          # Remove original signatures (auto-sign off)
           zip -d services_patched.jar "META-INF/*" || echo "No META-INF to remove"
 
       - name: Prepare Output Package
