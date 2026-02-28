@@ -6,7 +6,7 @@ on:
       services_url:
         description: 'Direct link to services.jar (must be a direct download URL)'
         required: true
-        default: 'https://pixeldrain.com/api/file/ocB5FvXD'
+        default: 'https://pixeldrain.com/u/TWMsK4nB'
 
 jobs:
   build:
