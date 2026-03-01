@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       services_url:
-        description: 'Direct link to services.jar (must be a direct download URL)'
+        description: 'Direct link to services.jar (Pixeldrain supported)'
         required: true
-        # default removed – user must provide a valid URL
+      disable_secure_screenshot:
+        description: 'Disable Secure Screenshot'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -21,75 +25,66 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
-      # ------------------------------------------------------------
-      # Validate input URL (not empty) and download
-      # ------------------------------------------------------------
       - name: Download and Validate services.jar
         run: |
           URL="${{ github.event.inputs.services_url }}"
-          
-          # Fail early if URL is empty
+
           if [ -z "$URL" ]; then
-            echo "❌ No URL provided. Please enter a valid direct download link to services.jar."
+            echo "❌ No URL provided."
             exit 1
+          fi
+
+          # Convert Pixeldrain share link to direct API link
+          PD_MATCH=$(echo "$URL" | grep -oP '(?<=pixeldrain\.com/u/)[^/?]+')
+          if [ -n "$PD_MATCH" ]; then
+            URL="https://pixeldrain.com/api/file/${PD_MATCH}"
+            echo "✅ Converted to Pixeldrain API link: $URL"
           fi
 
           echo "Downloading from: $URL"
 
-          # Use a realistic User-Agent to avoid being blocked
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-          # Download with follow redirects, capture HTTP code and headers
           HTTP_CODE=$(curl -L -A "$UA" -w "%{http_code}" -o services.jar -D headers.txt "$URL" 2>/dev/null)
 
           echo "HTTP response code: $HTTP_CODE"
-          echo "Response headers:"
           cat headers.txt
 
-          # If not 200, show first 20 lines of what we downloaded (often an error page)
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo "❌ HTTP error $HTTP_CODE"
-            echo "First 20 lines of downloaded content:"
             head -n 20 services.jar
             exit 1
           fi
 
-          # Check file size (services.jar should be > 1 MB)
           SIZE=$(stat -c%s services.jar 2>/dev/null || stat -f%z services.jar 2>/dev/null)
           echo "Downloaded size: $SIZE bytes"
           if [ "$SIZE" -lt 100000 ]; then
             echo "❌ File too small ($SIZE bytes) – probably not a valid JAR."
-            echo "First 20 lines:"
             head -n 20 services.jar
             exit 1
           fi
 
-          # Verify it's a ZIP archive (JAR = ZIP)
           if ! unzip -tq services.jar >/dev/null 2>&1; then
             echo "❌ File is not a valid ZIP/JAR archive."
             echo "File type: $(file -b services.jar)"
-            echo "First 20 lines:"
             head -n 20 services.jar
             exit 1
           fi
 
           echo "✅ Download successful, file is a valid JAR."
 
-      # ------------------------------------------------------------
-      # Ensure apktool is present (download if missing)
-      # ------------------------------------------------------------
       - name: Ensure apktool is present
         run: |
           if [ ! -f scripts/apktool.jar ]; then
-            echo "⚠️ scripts/apktool.jar not found – downloading latest version..."
+            echo "⚠️ scripts/apktool.jar not found – downloading..."
             mkdir -p scripts
             curl -L -o scripts/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.9.3.jar
           else
             echo "✅ Using existing scripts/apktool.jar"
           fi
 
-      - name: Backup Original META-INF and Resources
+      - name: Backup original services.jar
         run: |
+          cp services.jar services_original.jar
           mkdir -p backup
           unzip -o services.jar "META-INF/*" "res/*" -d backup/ 2>/dev/null || echo "No META-INF or res to backup"
 
@@ -107,12 +102,19 @@ jobs:
           fi
 
       - name: Execute Python Patcher
-        run: python3 scripts/patcher.py
+        env:
+          DISABLE_SECURE_SCREENSHOT: ${{ github.event.inputs.disable_secure_screenshot }}
+        run: python3 scripts/patcher.py 2>&1 | tee patch.log
 
       - name: Repack and Inject Class
-        continue-on-error: true
         run: |
-          java -jar scripts/apktool.jar b out_folder -o services_patched.jar
+          java -jar scripts/apktool.jar b out_folder -o services_patched.jar 2>&1
+          EXIT_CODE=$?
+
+          if [ ! -f services_patched.jar ]; then
+            echo "❌ services_patched.jar not found after repack!"
+            exit 1
+          fi
 
           if [ -f classes5.dex ]; then
             zip -u services_patched.jar classes5.dex
@@ -121,25 +123,54 @@ jobs:
             echo "⚠️ classes5.dex not found, skipping injection"
           fi
 
-          zip -d services_patched.jar "META-INF/*" || echo "No META-INF to remove"
+          zip -d services_patched.jar "META-INF/*" 2>/dev/null || echo "No META-INF to remove"
+
+          echo "✅ Repack complete"
 
       - name: Prepare Output Package
         run: |
-          mkdir -p final_output
-          cp services_patched.jar final_output/services.jar
+          mkdir -p final_output/logs
 
+          # Main files
+          cp services_patched.jar final_output/services.jar
+          cp services_original.jar final_output/services_original.jar
+
+          # System files
           if [ -d system ]; then
             cp -r system final_output/
           else
             echo "⚠️ system folder not found, skipping"
           fi
 
+          # README
           if [ -f README.md ]; then
             cp README.md final_output/
           fi
 
+          # Logs
+          cp patch.log final_output/logs/patch.log
+
+          # Magisk Module
+          if [ -d magisk_module ]; then
+            mkdir -p magisk_module/system/framework
+            cp services_patched.jar magisk_module/system/framework/services.jar
+            if [ -d system ]; then
+              cp -r system/. magisk_module/system/
+            fi
+            cd magisk_module
+            zip -r9 ../final_output/FaceUnlock-Module.zip . 2>/dev/null
+            cd ..
+            echo "✅ Magisk module created"
+          else
+            echo "⚠️ magisk_module folder not found, skipping"
+          fi
+
+          echo "📦 Output contents:"
+          ls -la final_output/
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: modified-services
+          name: patched-services
           path: final_output/
+          compression-level: 9
