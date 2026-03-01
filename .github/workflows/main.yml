@@ -107,6 +107,7 @@ jobs:
         run: python3 scripts/patcher.py 2>&1 | tee patch.log
 
       - name: Repack and Inject Class
+        continue-on-error: true
         run: |
           java -jar scripts/apktool.jar b out_folder -o services_patched.jar || true
           EXIT_CODE=$?
