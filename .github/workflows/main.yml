@@ -1,4 +1,4 @@
-name: Auto Patch FaceUnlock
+name: Patch services.jar
 
 on:
   workflow_dispatch:
@@ -141,5 +141,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Patched_FaceUnlock_Build
+          name: modified-services
           path: final_output/
